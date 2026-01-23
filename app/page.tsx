@@ -24,7 +24,6 @@ export default function HomePage() {
       </div>
 
       <div className="relative mx-auto max-w-6xl px-4 py-10 md:px-6 md:py-14">
-        {/* top mini nav */}
         <div className="flex items-center justify-between">
           <div className="inline-flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-xs ring-1 ring-white/10">
             <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_12px_rgba(0,229,255,0.7)]" />
