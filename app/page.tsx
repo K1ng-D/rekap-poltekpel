@@ -17,7 +17,6 @@ const ease: [number, number, number, number] = [0.16, 1, 0.3, 1];
 export default function HomePage() {
   return (
     <div className="min-h-screen bg-[#070A14] text-white">
-      {/* background glow */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-28 -left-28 h-80 w-80 rounded-full bg-cyan-400/20 blur-3xl" />
         <div className="absolute top-24 -right-24 h-96 w-96 rounded-full bg-fuchsia-500/20 blur-3xl" />
