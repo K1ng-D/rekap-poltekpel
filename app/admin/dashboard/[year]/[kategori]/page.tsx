@@ -16,7 +16,6 @@ import {
   FiCheckCircle,
   FiPauseCircle,
   FiXCircle,
-  FiClock,
   FiAlertTriangle,
   FiSearch,
   FiUploadCloud,
@@ -27,7 +26,10 @@ import {
   FiX,
 } from "react-icons/fi";
 
+// ✅ sesuaikan path ini dengan project kamu
 import { db } from "@/lib/firebase";
+// kalau yang benar: import { db } from "@/lib/firebase/client";
+
 import {
   collection,
   query,
@@ -40,7 +42,7 @@ import {
 } from "firebase/firestore";
 
 /** ===== Cloudinary ===== */
-const UPLOAD_PRESET_NAME = "poltekpel"; // <-- ganti dengan preset kamu
+const UPLOAD_PRESET_NAME = "poltekpel"; // <-- preset kamu
 const SIGNATURE_ENDPOINT = "/api/sign-cloudinary-params";
 
 /** slug -> label */
@@ -50,11 +52,10 @@ const KATEGORI_MAP: Record<string, string> = {
   "dp-iv": "DP IV",
 };
 
-/** SK file object dari Cloudinary */
 type SkFile = {
-  name: string; // nama tampilan
-  url: string; // secure_url
-  publicId: string; // public_id
+  name: string;
+  url: string;
+  publicId: string;
 };
 
 type Student = {
@@ -70,13 +71,19 @@ type Student = {
   program: string;
   keterangan: string; // CSV: KET
 
-  // ✅ SK sekarang dipisah:
-  skName: string; // dari CSV kolom SK (tampil sebagai teks)
-  skFile: SkFile | null; // setelah upload (jadi link)
+  skName: string; // CSV: SK (tampil teks)
+  skFile: SkFile | null; // Cloudinary (link)
 };
 
 type PieSlice = { label: string; value: number; color: string };
-type StatusKey = "lulus" | "skorsing" | "cuti" | "dropout" | "mengundurkan";
+
+type StatusKey =
+  | "aktif"
+  | "lulus"
+  | "skorsing"
+  | "cuti"
+  | "dropout"
+  | "mengundurkan";
 
 type StatusItem = {
   key: StatusKey;
@@ -97,15 +104,15 @@ const fadeUp: Variants = {
   }),
 };
 
-/** ===== STATUS MAPPING (5 status) =====
- *  - Mengundurkan Diri / Pengunduran Diri => mengundurkan
- *  - DO / lewat masa studi / dropout => dropout
- */
+/** ===== STATUS MAPPING (6 status) ===== */
 function normalizeStatus(keterangan: string): StatusKey {
   const s = (keterangan || "").toLowerCase().trim().replace(/\s+/g, " ");
 
-  // kalau kosong -> tetap masuk mengundurkan (sesuai permintaan: "belum lulus diganti")
+  // kalau kosong -> mengundurkan (sesuai aturan sebelumnya)
   if (!s) return "mengundurkan";
+
+  // ✅ status baru
+  if (s.includes("aktif")) return "aktif";
 
   if (s.includes("lulus")) return "lulus";
   if (s.includes("skors")) return "skorsing";
@@ -115,8 +122,9 @@ function normalizeStatus(keterangan: string): StatusKey {
     s.includes("dropout") ||
     s.includes("lewat masa studi") ||
     /\bdo\b/.test(s)
-  )
+  ) {
     return "dropout";
+  }
 
   if (
     s.includes("mengundurkan diri") ||
@@ -137,8 +145,10 @@ function parseNumberSafe(x: any, fallback = 0) {
 /** Normalisasi header CSV:
  * NO/NO. -> no
  * NAMA -> nama
+ * NRT -> nrt
  * TTL -> ttl
  * L/P -> lp
+ * PROGRAM -> program
  * KET -> ket
  * SK -> sk
  */
@@ -146,8 +156,8 @@ function normalizeHeader(h: string) {
   return h
     .toLowerCase()
     .trim()
-    .replace(/\uFEFF/g, "") // hapus BOM
-    .replace(/[\s._,/-]+/g, ""); // buang spasi/titik/dll
+    .replace(/\uFEFF/g, "")
+    .replace(/[\s._,/-]+/g, "");
 }
 
 function detectDelimiter(sampleText: string): "," | "\t" {
@@ -156,7 +166,7 @@ function detectDelimiter(sampleText: string): "," | "\t" {
   return tabCount > commaCount ? "\t" : ",";
 }
 
-/** ===== CHART HELPERS ===== */
+/** ===== PIE HELPERS ===== */
 function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
   const rad = ((angleDeg - 90) * Math.PI) / 180.0;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
@@ -238,6 +248,7 @@ function PieChart({
           stroke="rgba(255,255,255,0.08)"
           strokeWidth={2}
         />
+
         <text
           x={cx}
           y={cy - 4}
@@ -271,7 +282,7 @@ function BarChart({ items }: { items: StatusItem[] }) {
   return (
     <div className="space-y-2">
       {items.map((it, idx) => {
-        const widthPct = (it.value / maxVal) * 100;
+        const pctWidth = (it.value / maxVal) * 100;
         const pctTotal = Math.round((it.value / total) * 100);
         const Icon = it.icon;
 
@@ -301,7 +312,7 @@ function BarChart({ items }: { items: StatusItem[] }) {
                 <div className="mt-2 h-2.5 w-full rounded-full bg-white/5 ring-1 ring-white/10 overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: `${widthPct}%` }}
+                    animate={{ width: `${pctWidth}%` }}
                     transition={{ duration: 0.45, ease: easeOut }}
                     className="h-full rounded-full"
                     style={{
@@ -380,7 +391,6 @@ export default function Page() {
             lp: x.lp ?? "",
             program: x.program ?? "",
             keterangan: x.keterangan ?? "",
-            // ✅ ambil dari firestore
             skName: x.skName ?? "",
             skFile: x.skFile && typeof x.skFile === "object" ? x.skFile : null,
           };
@@ -420,9 +430,10 @@ export default function Page() {
     });
   }, [rows, qText, statusFilter]);
 
-  /** STATUS COUNTS (mengikuti filter/search) */
+  /** STATUS COUNTS */
   const statusItems: StatusItem[] = useMemo(() => {
     const counts: Record<StatusKey, number> = {
+      aktif: 0,
       lulus: 0,
       skorsing: 0,
       cuti: 0,
@@ -430,9 +441,18 @@ export default function Page() {
       mengundurkan: 0,
     };
 
-    for (const r of filtered) counts[normalizeStatus(r.keterangan)] += 1;
+    for (const r of filtered) {
+      counts[normalizeStatus(r.keterangan)] += 1;
+    }
 
     return [
+      {
+        key: "aktif",
+        label: "Aktif",
+        value: counts.aktif,
+        color: "#22C55E",
+        icon: FiUsers,
+      },
       {
         key: "lulus",
         label: "Lulus",
@@ -475,6 +495,7 @@ export default function Page() {
     () => statusItems.reduce((a, b) => a + b.value, 0),
     [statusItems],
   );
+
   const slices: PieSlice[] = useMemo(
     () =>
       statusItems.map((x) => ({
@@ -496,7 +517,7 @@ export default function Page() {
     [filtered, start, end],
   );
 
-  /** IMPORT CSV -> Firestore (SK dari CSV masuk ke skName) */
+  /** IMPORT CSV -> Firestore */
   async function handleImportCsv(file: File) {
     setImporting(true);
     setImportMsg(null);
@@ -512,13 +533,11 @@ export default function Page() {
         transformHeader: (h) => normalizeHeader(h),
       });
 
-      if (parsed.errors?.length) {
+      if (parsed.errors?.length)
         throw new Error(parsed.errors[0]?.message || "CSV parse error");
-      }
 
       const dataRaw = (parsed.data || []) as Record<string, any>[];
 
-      // supports header: NO,NAMA,NRT,TTL,L/P,PROGRAM,KET,SK
       const mapped = dataRaw
         .map((r, idx) => {
           const no = parseNumberSafe(r["no"], idx + 1);
@@ -531,12 +550,10 @@ export default function Page() {
             ttl: (r["ttl"] ?? "").toString().trim(),
             lp: (r["lp"] ?? "").toString().trim(),
             program: (r["program"] ?? "").toString().trim(),
+            // KET dari CSV -> keterangan
             keterangan: (r["ket"] ?? r["keterangan"] ?? "").toString().trim(),
-
-            // ✅ INI KUNCINYA: SK dari CSV tampil sebagai teks
+            // SK dari CSV -> skName
             skName: (r["sk"] ?? "").toString().trim(),
-
-            // file belum ada sampai upload cloudinary
             skFile: null,
           };
         })
@@ -551,7 +568,7 @@ export default function Page() {
         return;
       }
 
-      // delete old data (year+kategori) to avoid duplicates
+      // delete old data
       const existingSnap = await getDocs(
         query(
           collection(db, "students"),
@@ -559,6 +576,7 @@ export default function Page() {
           where("kategori", "==", kategoriSlug),
         ),
       );
+
       const deletes = existingSnap.docs.map((d) => d.ref);
       const chunkSize = 450;
 
@@ -621,7 +639,7 @@ export default function Page() {
     }
   }
 
-  /** EDIT TABLE */
+  /** EDIT */
   function startEdit(row: Student) {
     setEditingId(row.id);
     setDraft({
@@ -631,7 +649,7 @@ export default function Page() {
       lp: row.lp,
       program: row.program,
       keterangan: row.keterangan,
-      skName: row.skName, // ✅ bisa edit nama SK juga kalau mau
+      skName: row.skName,
     });
   }
 
@@ -667,15 +685,15 @@ export default function Page() {
 
   async function setSkFile(rowId: string, file: SkFile, fallbackName: string) {
     const ref = doc(collection(db, "students"), rowId);
-
-    // kalau skName dari CSV kosong, pakai nama file upload
     const finalName = fallbackName?.trim() ? fallbackName : file.name;
 
+    // ✅ simpan hanya field aman (tanpa format/resourceType)
     await updateDoc(ref, {
       skName: finalName,
       skFile: {
-        ...file,
         name: finalName,
+        url: file.url,
+        publicId: file.publicId,
       },
     });
   }
@@ -741,7 +759,7 @@ export default function Page() {
               <div className="text-sm text-white/70">Import Data</div>
               <div className="text-lg font-semibold">Upload CSV</div>
               <div className="text-xs text-white/55">
-                Header file: <b>NO,NAMA,NRT,TTL,L/P,PROGRAM,KET,SK</b>
+                Header: <b>NO,NAMA,NRT,TTL,L/P,PROGRAM,KET,SK</b>
               </div>
             </div>
 
@@ -782,7 +800,6 @@ export default function Page() {
           )}
         </motion.div>
 
-        {/* Loading / Error */}
         {loading ? (
           <div className="mt-6 rounded-3xl bg-white/5 p-6 ring-1 ring-white/10">
             Memuat data dari Firestore...
@@ -790,9 +807,6 @@ export default function Page() {
         ) : err ? (
           <div className="mt-6 rounded-3xl bg-white/5 p-6 ring-1 ring-red-400/30 text-red-200">
             Error Firestore: {err}
-            <div className="mt-2 text-xs text-white/60">
-              Jika upload/edit gagal karena permission, cek Rules Firestore.
-            </div>
           </div>
         ) : (
           <>
@@ -819,7 +833,7 @@ export default function Page() {
                     <div className="text-sm text-white/70">Snapshot</div>
                     <div className="text-lg font-semibold">Kondisi Aktual</div>
                     <div className="mt-1 text-xs text-white/55">
-                      Chart mengikuti filter/search
+                      Termasuk status <b>Aktif</b>
                     </div>
                   </div>
                   <div className="text-xs text-white/60">
@@ -827,6 +841,7 @@ export default function Page() {
                     <span className="text-white/90 font-semibold">{total}</span>
                   </div>
                 </div>
+
                 <div className="mt-4">
                   <PieChart slices={slices} />
                 </div>
@@ -868,9 +883,10 @@ export default function Page() {
                     </div>
                   </div>
                   <div className="text-xs text-white/55">
-                    Sinkron dengan pie
+                    6 status (termasuk Aktif)
                   </div>
                 </div>
+
                 <div className="mt-4">
                   <BarChart items={statusItems} />
                 </div>
@@ -887,11 +903,11 @@ export default function Page() {
             >
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <div className="text-sm text-white/70">Data Mahasiswa</div>
+                  <div className="text-sm text-white/70">Data Taruna</div>
                   <div className="text-lg font-semibold">Records</div>
                   <div className="text-xs text-white/55">
-                    Menampilkan: {pagedRows.length} data (halaman {currentPage}/
-                    {totalPages}) dari {totalRows} hasil filter
+                    Menampilkan: {pagedRows.length} data (Hal {currentPage}/
+                    {totalPages}) dari {totalRows}
                   </div>
                 </div>
 
@@ -900,8 +916,8 @@ export default function Page() {
                   <input
                     value={qText}
                     onChange={(e) => setQText(e.target.value)}
-                    placeholder="Search (Nama / NRT / Program / STATUS / SK)"
-                    className="w-full rounded-2xl bg-white/5 px-10 py-2.5 text-sm text-white placeholder:text-white/40 ring-1 ring-white/10 outline-none transition focus:ring-white/20"
+                    placeholder="Search (Nama/NRT/Status/SK)"
+                    className="w-full rounded-2xl bg-white/5 px-10 py-2.5 text-sm text-white placeholder:text-white/40 ring-1 ring-white/10 outline-none focus:ring-white/20"
                   />
                 </div>
               </div>
@@ -961,8 +977,8 @@ export default function Page() {
                       <th className="px-3 py-3 text-left">TTL</th>
                       <th className="px-3 py-3 text-left">L/P</th>
                       <th className="px-3 py-3 text-left">PROGRAM</th>
-                      <th className="px-3 py-3 text-left">STATUS</th>
                       <th className="px-3 py-3 text-left">SK</th>
+                      <th className="px-3 py-3 text-left">STATUS</th>
                       <th className="px-3 py-3 text-left">Aksi</th>
                     </tr>
                   </thead>
@@ -1073,6 +1089,87 @@ export default function Page() {
                             )}
                           </td>
 
+                          <td className="px-3 py-3">
+                            <div className="flex items-center gap-2">
+                              {r.skFile?.url ? (
+                                <a
+                                  href={r.skFile.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-sm text-cyan-300 hover:underline"
+                                  title="Buka file SK"
+                                >
+                                  {r.skFile.name || r.skName || "Lihat SK"}
+                                </a>
+                              ) : (
+                                <span
+                                  className="text-sm text-white/70"
+                                  title="File belum diupload"
+                                >
+                                  {r.skName ? r.skName : "Belum ada"}
+                                </span>
+                              )}
+
+                              <CldUploadWidget
+                                uploadPreset={UPLOAD_PRESET_NAME}
+                                signatureEndpoint={SIGNATURE_ENDPOINT}
+                                options={{
+                                  sources: ["local"],
+                                  multiple: false,
+                                  resourceType: "raw",
+                                  clientAllowedFormats: ["pdf"],
+                                  folder: `poltekpel/${year}/${kategoriSlug}/sk`,
+                                }}
+                                onSuccess={async (result: any) => {
+                                  const info = result?.info;
+                                  if (!info?.secure_url || !info?.public_id)
+                                    return;
+
+                                  const uploadedName =
+                                    info.original_filename && info.format
+                                      ? `${info.original_filename}.${info.format}`
+                                      : "SK.pdf";
+
+                                  await setSkFile(
+                                    r.id,
+                                    {
+                                      name: uploadedName,
+                                      url: info.secure_url,
+                                      publicId: info.public_id,
+                                    },
+                                    r.skName,
+                                  );
+                                }}
+                              >
+                                {({ open }) => (
+                                  <button
+                                    type="button"
+                                    onClick={() => open()}
+                                    className="rounded-xl bg-white/5 px-3 py-2 text-xs ring-1 ring-white/10 hover:bg-white/10"
+                                  >
+                                    Upload
+                                  </button>
+                                )}
+                              </CldUploadWidget>
+                            </div>
+
+                            {isEditing ? (
+                              <div className="mt-2">
+                                <input
+                                  value={String(draft.skName ?? "")}
+                                  onChange={(e) =>
+                                    setDraft((p) => ({
+                                      ...p,
+                                      skName: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Edit nama SK (opsional)"
+                                  className="w-full rounded-xl bg-white/5 px-3 py-2 text-xs ring-1 ring-white/10 outline-none focus:ring-white/20"
+                                />
+                              </div>
+                            ) : null}
+                          </td>
+
                           <td className="px-3 py-3 text-white/80">
                             {isEditing ? (
                               <select
@@ -1085,6 +1182,9 @@ export default function Page() {
                                 }
                                 className="w-full rounded-xl bg-white/5 px-3 py-2 text-sm ring-1 ring-white/10 outline-none focus:ring-white/20"
                               >
+                                <option value="aktif" className="bg-[#070A14]">
+                                  aktif
+                                </option>
                                 <option value="lulus" className="bg-[#070A14]">
                                   lulus
                                 </option>
@@ -1124,97 +1224,6 @@ export default function Page() {
                             )}
                           </td>
 
-                          {/* ✅ SK: tampil dari CSV (skName) dan jadi link kalau sudah upload (skFile) */}
-                          <td className="px-3 py-3">
-                            <div className="flex items-center gap-2">
-                              {r.skFile?.url ? (
-                                <a
-                                  href={r.skFile.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-sm text-cyan-300 hover:underline"
-                                  title="Buka file SK"
-                                >
-                                  {r.skFile.name || r.skName || "Lihat SK"}
-                                </a>
-                              ) : (
-                                <span
-                                  className="text-sm text-white/70"
-                                  title="File belum diupload"
-                                >
-                                  {r.skName ? r.skName : "Belum ada"}
-                                </span>
-                              )}
-
-                              {/* Upload button */}
-                              <CldUploadWidget
-                                uploadPreset={UPLOAD_PRESET_NAME}
-                                signatureEndpoint={SIGNATURE_ENDPOINT}
-                                options={{
-                                  sources: ["local"],
-                                  multiple: false,
-                                  resourceType: "raw",
-                                  clientAllowedFormats: ["pdf"], // ✅ batasi hanya pdf
-                                  // kalau mau doc/docx juga:
-                                  // clientAllowedFormats: ["pdf","doc","docx"],
-                                  folder: `poltekpel/${year}/${kategoriSlug}/sk`,
-                                }}
-                                onSuccess={async (result: any) => {
-                                  const info = result?.info;
-                                  if (!info?.secure_url) return;
-
-                                  console.log("CLOUDINARY UPLOAD INFO:", info); // ✅ cek di console
-
-                                  await updateDoc(
-                                    doc(collection(db, "students"), r.id),
-                                    {
-                                      skName: r.skName?.trim()
-                                        ? r.skName
-                                        : `${info.original_filename}.${info.format}`,
-                                      skFile: {
-                                        name: r.skName?.trim()
-                                          ? r.skName
-                                          : `${info.original_filename}.${info.format}`,
-                                        url: info.secure_url, // ✅ ini link yang benar
-                                        publicId: info.public_id,
-                                        format: info.format, // ✅ optional
-                                        resourceType: info.resource_type, // ✅ optional
-                                      },
-                                    },
-                                  );
-                                }}
-                              >
-                                {({ open }) => (
-                                  <button
-                                    type="button"
-                                    onClick={() => open()}
-                                    className="rounded-xl bg-white/5 px-3 py-2 text-xs ring-1 ring-white/10 hover:bg-white/10"
-                                  >
-                                    Upload
-                                  </button>
-                                )}
-                              </CldUploadWidget>
-                            </div>
-
-                            {/* edit skName manual */}
-                            {isEditing ? (
-                              <div className="mt-2">
-                                <input
-                                  value={String(draft.skName ?? "")}
-                                  onChange={(e) =>
-                                    setDraft((p) => ({
-                                      ...p,
-                                      skName: e.target.value,
-                                    }))
-                                  }
-                                  placeholder="Edit nama SK (opsional)"
-                                  className="w-full rounded-xl bg-white/5 px-3 py-2 text-xs ring-1 ring-white/10 outline-none focus:ring-white/20"
-                                />
-                              </div>
-                            ) : null}
-                          </td>
-
-                          {/* ACTIONS */}
                           <td className="px-3 py-3">
                             {isEditing ? (
                               <div className="flex items-center gap-2">
@@ -1272,7 +1281,7 @@ export default function Page() {
                     {Math.min(end, totalRows)}
                   </span>{" "}
                   dari <span className="text-white/80">{totalRows}</span> data •
-                  Halaman <span className="text-white/80">{currentPage}</span>/
+                  Hal <span className="text-white/80">{currentPage}</span>/
                   <span className="text-white/80">{totalPages}</span>
                 </div>
 
