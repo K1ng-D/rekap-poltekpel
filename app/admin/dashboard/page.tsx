@@ -17,16 +17,37 @@ import {
   FiLogOut,
   FiCalendar,
   FiLayers,
+  FiTable,
+  FiFilter,
+  FiRotateCcw,
 } from "react-icons/fi";
 
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot } from "firebase/firestore";
 
-type PieSlice = {
-  label: string;
-  value: number;
-  color: string;
+/** =========================
+ *  TYPES
+ *  ========================= */
+type StatusKey =
+  | "aktif"
+  | "lulus"
+  | "skorsing"
+  | "cuti"
+  | "dropout"
+  | "mengundurkan";
+
+type Row = {
+  id: string;
+  year: number;
+  kategori: string; // diploma-iii / dp-iii / dp-iv
+  program: string; // contoh: "nautika (reguler)" , "teknika (mandiri)" , "nautika"
+  keterangan: string; // status text
 };
+
+type ProgramTingkat = "Diploma III" | "DP III" | "DP IV";
+type Jalur = "Reguler" | "Mandiri" | "Polbit";
+
+type Prodi = "Nautika" | "Teknika" | "Permesinan Kapal" | "MTL" | "Lainnya";
 
 type StatusItem = {
   label: string;
@@ -35,15 +56,30 @@ type StatusItem = {
   icon: React.ComponentType<any>;
 };
 
-type StatusKey = "lulus" | "skorsing" | "cuti" | "dropout" | "mengundurkan";
-
-type Row = {
-  id: string;
-  year: number;
-  kategori: string; // diploma-iii / dp-iii / dp-iv
-  keterangan: string;
+type PieSlice = {
+  label: string;
+  value: number;
+  color: string;
 };
 
+type RekapRow = {
+  year: number; // angkatan
+  programTingkat: ProgramTingkat; // Diploma III / DP III / DP IV (dari kategori)
+  jalur: Jalur; // Reguler / Mandiri (dari program -> default Reguler)
+  prodi: Prodi; // Nautika/Teknika/Permesinan Kapal/MTL (dari program)
+  total: number; // jumlah awal
+  aktif: number;
+  lulus: number;
+  cuti: number;
+  skorsing: number;
+  dropout: number;
+  mengundurkan: number;
+  belumLulus: number; // total - lulus
+};
+
+/** =========================
+ *  ANIMATION
+ *  ========================= */
 const easeOut: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 const fadeUp: Variants = {
@@ -55,10 +91,17 @@ const fadeUp: Variants = {
   }),
 };
 
+/** =========================
+ *  HELPERS
+ *  ========================= */
 function normalizeStatus(keterangan: string): StatusKey {
   const s = (keterangan || "").toLowerCase().trim().replace(/\s+/g, " ");
 
+  // kalau kosong -> kamu sebelumnya default mengundurkan
   if (!s) return "mengundurkan";
+
+  // ✅ status baru
+  if (s.includes("aktif")) return "aktif";
 
   if (s.includes("lulus")) return "lulus";
   if (s.includes("skors")) return "skorsing";
@@ -68,32 +111,88 @@ function normalizeStatus(keterangan: string): StatusKey {
     s.includes("dropout") ||
     s.includes("lewat masa studi") ||
     /\bdo\b/.test(s)
-  ) {
+  )
     return "dropout";
-  }
 
   if (
     s.includes("mengundurkan diri") ||
     s.includes("pengunduran diri") ||
     s.includes("undur diri")
-  ) {
+  )
     return "mengundurkan";
-  }
 
+  // default
   return "mengundurkan";
 }
 
-function emptyCounts() {
+function emptyCounts(): Record<StatusKey, number> {
   return {
+    aktif: 0,
     lulus: 0,
     skorsing: 0,
     cuti: 0,
     dropout: 0,
     mengundurkan: 0,
-  } as Record<StatusKey, number>;
+  };
 }
 
-/** ==== Chart helpers (Pie) ==== */
+function kategoriToProgramTingkat(kategoriSlug: string): ProgramTingkat {
+  const k = (kategoriSlug || "").toLowerCase();
+  if (k === "diploma-iii") return "Diploma III";
+  if (k === "dp-iii") return "DP III";
+  return "DP IV";
+}
+
+/**
+ * ✅ RULE JALUR (sesuai koreksi kamu)
+ * - ada "(mandiri)" => Mandiri
+ * - ada "(reguler)" => Reguler
+ * - tidak ada keduanya => default Reguler (bukan lainnya)
+ */
+function parseJalur(programText: string): Jalur {
+  const s = (programText || "").toLowerCase();
+
+  // ✅ prioritas: polbit dulu
+  if (s.includes("polbit")) return "Polbit";
+
+  // mandiri
+  if (s.includes("mandiri")) return "Mandiri";
+
+  // reguler
+  if (s.includes("reguler")) return "Reguler";
+
+  // ✅ default jika tidak ada kata apa pun
+  return "Reguler";
+}
+
+/**
+ * Prodi diambil dari field "program" yang tersimpan di Firestore.
+ * Contoh:
+ *  - "nautika (reguler)" => Nautika
+ *  - "permesinan kapal (mandiri)" => Permesinan Kapal
+ *  - "mtl" => MTL
+ */
+function parseProdi(programText: string): Prodi {
+  const s = (programText || "").toLowerCase().trim();
+
+  // rapikan (hapus tanda kurung)
+  const clean = s
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (clean.includes("permesinan kapal")) return "Permesinan Kapal";
+  if (clean.includes("nautika")) return "Nautika";
+  if (clean.includes("teknika")) return "Teknika";
+  if (/\bmtl\b/.test(clean) || clean.includes("manajemen transportasi laut"))
+    return "MTL";
+
+  return "Lainnya";
+}
+
+/** =========================
+ *  PIE CHART HELPERS
+ *  ========================= */
 function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
   const rad = ((angleDeg - 90) * Math.PI) / 180.0;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
@@ -279,6 +378,9 @@ function BarChart({ items }: { items: StatusItem[] }) {
   );
 }
 
+/** =========================
+ *  PAGE
+ *  ========================= */
 export default function DashboardPage() {
   const [query, setQuery] = useState("");
 
@@ -286,7 +388,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Ambil semua data students (gabungan semua tahun & kategori)
+  /** Realtime read */
   useEffect(() => {
     setLoading(true);
     setErr(null);
@@ -300,6 +402,7 @@ export default function DashboardPage() {
             id: d.id,
             year: Number(x.year ?? 0),
             kategori: String(x.kategori ?? ""),
+            program: String(x.program ?? ""), // ✅ dipakai untuk prodi + jalur
             keterangan: String(x.keterangan ?? ""),
           };
         });
@@ -316,20 +419,22 @@ export default function DashboardPage() {
     return () => unsub();
   }, []);
 
-  // optional search: year/kategori/keterangan (simple)
+  /** Search sederhana (tahun/kategori/status/program) */
   const searched = useMemo(() => {
     const s = query.trim().toLowerCase();
     if (!s) return rows;
+
     return rows.filter((r) => {
       return (
         String(r.year).includes(s) ||
         r.kategori.toLowerCase().includes(s) ||
-        r.keterangan.toLowerCase().includes(s)
+        r.keterangan.toLowerCase().includes(s) ||
+        r.program.toLowerCase().includes(s)
       );
     });
   }, [rows, query]);
 
-  // ringkasan overall
+  /** Overall counts (mengikuti search) */
   const overallCounts = useMemo(() => {
     const c = emptyCounts();
     for (const r of searched) {
@@ -345,7 +450,7 @@ export default function DashboardPage() {
     [overallCounts],
   );
 
-  // ringkasan per tahun
+  /** Rekap per tahun (card grid) -> tidak pakai filter tabel, hanya sumber raw rows */
   const perYear = useMemo(() => {
     const map = new Map<
       number,
@@ -363,15 +468,20 @@ export default function DashboardPage() {
       obj.counts[normalizeStatus(r.keterangan)] += 1;
     }
 
-    // urutkan tahun descending
     return Array.from(map.entries())
       .map(([year, v]) => ({ year, ...v }))
       .sort((a, b) => b.year - a.year);
   }, [rows]);
 
-  // pie + bar items (overall)
+  /** Items untuk chart (overall) */
   const statusItems: StatusItem[] = useMemo(
     () => [
+      {
+        label: "Aktif",
+        value: overallCounts.aktif,
+        color: "#22C55E",
+        icon: FiUsers,
+      },
       {
         label: "Lulus",
         value: overallCounts.lulus,
@@ -416,27 +526,27 @@ export default function DashboardPage() {
     [statusItems],
   );
 
-  // cards ringkasan atas
+  /** Cards atas */
   const stats = useMemo(() => {
     const risiko = overallCounts.dropout + overallCounts.skorsing;
     return [
       {
         title: "Total Data",
         value: totalAll.toLocaleString("id-ID"),
-        icon: FiUsers,
+        icon: FiLayers,
         hint: "gabungan semua tahun",
+      },
+      {
+        title: "Aktif",
+        value: overallCounts.aktif.toLocaleString("id-ID"),
+        icon: FiUsers,
+        hint: "taruna aktif",
       },
       {
         title: "Lulus",
         value: overallCounts.lulus.toLocaleString("id-ID"),
         icon: FiTrendingUp,
         hint: "total kelulusan",
-      },
-      {
-        title: "Cuti Akademik",
-        value: overallCounts.cuti.toLocaleString("id-ID"),
-        icon: FiPauseCircle,
-        hint: "status non-aktif",
       },
       {
         title: "Risiko (DO+Skors)",
@@ -446,6 +556,178 @@ export default function DashboardPage() {
       },
     ];
   }, [overallCounts, totalAll]);
+
+  /** =========================
+   *  REKAP TABEL (angkatan/program/jalur/prodi/status)
+   *  - menggunakan semua rows (bukan searched), karena filter tabel terpisah
+   *  ========================= */
+  const rekapAll: RekapRow[] = useMemo(() => {
+    // key: year|programTingkat|jalur|prodi
+    const map = new Map<string, Omit<RekapRow, "belumLulus">>();
+
+    for (const r of rows) {
+      const y = Number(r.year);
+      if (!Number.isFinite(y) || y <= 0) continue;
+
+      const programTingkat = kategoriToProgramTingkat(r.kategori);
+      const jalur = parseJalur(r.program);
+      const prodi = parseProdi(r.program);
+
+      const key = `${y}|${programTingkat}|${jalur}|${prodi}`;
+
+      if (!map.has(key)) {
+        map.set(key, {
+          year: y,
+          programTingkat,
+          jalur,
+          prodi,
+          total: 0,
+          aktif: 0,
+          lulus: 0,
+          cuti: 0,
+          skorsing: 0,
+          dropout: 0,
+          mengundurkan: 0,
+        });
+      }
+
+      const obj = map.get(key)!;
+      obj.total += 1;
+
+      const st = normalizeStatus(r.keterangan);
+      obj[st] += 1;
+    }
+
+    const out: RekapRow[] = Array.from(map.values()).map((x) => ({
+      ...x,
+      belumLulus: x.total - x.lulus, // ✅ belum lulus = selain lulus
+    }));
+
+    // urut rapi: year desc, program, jalur, prodi
+    out.sort((a, b) => {
+      if (b.year !== a.year) return b.year - a.year;
+      if (a.programTingkat !== b.programTingkat)
+        return a.programTingkat.localeCompare(b.programTingkat);
+      if (a.jalur !== b.jalur) return a.jalur.localeCompare(b.jalur);
+      return a.prodi.localeCompare(b.prodi);
+    });
+
+    return out;
+  }, [rows]);
+
+  /** =========================
+   *  FILTER TABEL REKAP
+   *  ========================= */
+  const [filterYear, setFilterYear] = useState<number | "ALL">("ALL");
+  const [filterYearInput, setFilterYearInput] = useState<string>(""); // input bebas
+
+  const [filterProgramTingkat, setFilterProgramTingkat] = useState<
+    ProgramTingkat | "ALL"
+  >("ALL");
+  const [filterJalur, setFilterJalur] = useState<Jalur | "ALL">("ALL");
+  const [filterProdi, setFilterProdi] = useState<Prodi | "ALL">("ALL");
+
+  const filterOptions = useMemo(() => {
+    const years = Array.from(new Set(rekapAll.map((r) => r.year))).sort(
+      (a, b) => b - a,
+    );
+    const programs = Array.from(
+      new Set(rekapAll.map((r) => r.programTingkat)),
+    ).sort((a, b) => a.localeCompare(b));
+    const jalurs = Array.from(new Set(rekapAll.map((r) => r.jalur))).sort(
+      (a, b) => a.localeCompare(b),
+    );
+    const prodis = Array.from(new Set(rekapAll.map((r) => r.prodi))).sort(
+      (a, b) => a.localeCompare(b),
+    );
+    return { years, programs, jalurs, prodis };
+  }, [rekapAll]);
+
+  const rekapFiltered = useMemo(() => {
+    return rekapAll.filter((r) => {
+      if (filterYear !== "ALL" && r.year !== filterYear) return false;
+      if (
+        filterProgramTingkat !== "ALL" &&
+        r.programTingkat !== filterProgramTingkat
+      )
+        return false;
+      if (filterJalur !== "ALL" && r.jalur !== filterJalur) return false;
+      if (filterProdi !== "ALL" && r.prodi !== filterProdi) return false;
+      return true;
+    });
+  }, [rekapAll, filterYear, filterProgramTingkat, filterJalur, filterProdi]);
+
+  /** Total per angkatan (mengikuti filter tabel) */
+  const totalPerAngkatanFiltered = useMemo(() => {
+    const map = new Map<
+      number,
+      {
+        year: number;
+        total: number;
+        aktif: number;
+        lulus: number;
+        cuti: number;
+        skorsing: number;
+        dropout: number;
+        mengundurkan: number;
+        belumLulus: number;
+      }
+    >();
+
+    for (const r of rekapFiltered) {
+      if (!map.has(r.year)) {
+        map.set(r.year, {
+          year: r.year,
+          total: 0,
+          aktif: 0,
+          lulus: 0,
+          cuti: 0,
+          skorsing: 0,
+          dropout: 0,
+          mengundurkan: 0,
+          belumLulus: 0,
+        });
+      }
+      const t = map.get(r.year)!;
+      t.total += r.total;
+      t.aktif += r.aktif;
+      t.lulus += r.lulus;
+      t.cuti += r.cuti;
+      t.skorsing += r.skorsing;
+      t.dropout += r.dropout;
+      t.mengundurkan += r.mengundurkan;
+      t.belumLulus += r.belumLulus;
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.year - a.year);
+  }, [rekapFiltered]);
+
+  /** Grand total semua angkatan (mengikuti filter tabel) */
+  const grandTotalFiltered = useMemo(() => {
+    return totalPerAngkatanFiltered.reduce(
+      (acc, r) => {
+        acc.total += r.total;
+        acc.aktif += r.aktif;
+        acc.lulus += r.lulus;
+        acc.cuti += r.cuti;
+        acc.skorsing += r.skorsing;
+        acc.dropout += r.dropout;
+        acc.mengundurkan += r.mengundurkan;
+        acc.belumLulus += r.belumLulus;
+        return acc;
+      },
+      {
+        total: 0,
+        aktif: 0,
+        lulus: 0,
+        cuti: 0,
+        skorsing: 0,
+        dropout: 0,
+        mengundurkan: 0,
+        belumLulus: 0,
+      },
+    );
+  }, [totalPerAngkatanFiltered]);
 
   return (
     <div className="min-h-screen bg-[#070A14] text-white">
@@ -465,11 +747,15 @@ export default function DashboardPage() {
           className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
         >
           <div>
-            <div className="text-sm text-white/60">Admin • Dashboard</div>
+            <div className="text-sm text-white/60">REKAP TARUNA POLTEKPEL</div>
             <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">
               Dashboard Utama{" "}
               <span className="text-white/50">— rekap semua tahun</span>
             </h1>
+            <div className="mt-2 text-xs text-white/55 flex items-center gap-2">
+              <FiLayers />
+              <span>Source: Firestore • Collection: students</span>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -478,7 +764,7 @@ export default function DashboardPage() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search… (tahun/kategori/status)"
+                placeholder="Search… (tahun/kategori/status/program)"
                 className="w-full rounded-2xl bg-white/5 px-10 py-2.5 text-sm text-white placeholder:text-white/40 ring-1 ring-white/10 outline-none transition focus:ring-white/20"
               />
             </div>
@@ -528,9 +814,8 @@ export default function DashboardPage() {
               })}
             </div>
 
-            {/* Main charts */}
+            {/* Charts */}
             <div className="mt-6 grid gap-4 lg:grid-cols-3">
-              {/* Pie */}
               <motion.div
                 variants={fadeUp}
                 initial="hidden"
@@ -544,6 +829,9 @@ export default function DashboardPage() {
                     <div className="text-lg font-semibold">
                       Kondisi Aktual (Semua Tahun)
                     </div>
+                    <div className="mt-1 text-xs text-white/55">
+                      Chart mengikuti search (kalau search diisi)
+                    </div>
                   </div>
                   <div className="text-xs text-white/55">
                     Total: <span className="text-white/80">{totalAll}</span>
@@ -555,7 +843,6 @@ export default function DashboardPage() {
                 </div>
               </motion.div>
 
-              {/* Bar */}
               <motion.div
                 variants={fadeUp}
                 initial="hidden"
@@ -571,7 +858,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="text-xs text-white/55">
-                    Search mempengaruhi chart (kalau search diisi)
+                    Sinkron dengan pie
                   </div>
                 </div>
 
@@ -581,7 +868,7 @@ export default function DashboardPage() {
               </motion.div>
             </div>
 
-            {/* Per year summary */}
+            {/* Rekap per tahun (cards link) */}
             <motion.div
               variants={fadeUp}
               initial="hidden"
@@ -621,6 +908,12 @@ export default function DashboardPage() {
 
                     <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-2xl bg-white/5 px-3 py-2 ring-1 ring-white/10">
+                        Aktif:{" "}
+                        <span className="text-white font-semibold">
+                          {y.counts.aktif}
+                        </span>
+                      </div>
+                      <div className="rounded-2xl bg-white/5 px-3 py-2 ring-1 ring-white/10">
                         Lulus:{" "}
                         <span className="text-white font-semibold">
                           {y.counts.lulus}
@@ -644,8 +937,8 @@ export default function DashboardPage() {
                           {y.counts.dropout}
                         </span>
                       </div>
-                      <div className="col-span-2 rounded-2xl bg-white/5 px-3 py-2 ring-1 ring-white/10">
-                        Mengundurkan:{" "}
+                      <div className="rounded-2xl bg-white/5 px-3 py-2 ring-1 ring-white/10">
+                        Undur:{" "}
                         <span className="text-white font-semibold">
                           {y.counts.mengundurkan}
                         </span>
@@ -659,11 +952,307 @@ export default function DashboardPage() {
                 ))}
               </div>
             </motion.div>
+
+            {/* =========================
+                TABEL REKAP SEMUA (angkatan/program/jalur/prodi/status)
+               ========================= */}
+            <motion.div
+              variants={fadeUp}
+              initial="hidden"
+              animate="show"
+              custom={8}
+              className="mt-6 rounded-3xl bg-white/5 p-5 ring-1 ring-white/10 backdrop-blur"
+            >
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-sm text-white/70 flex items-center gap-2">
+                    <FiTable /> Tabel Rekap Semua
+                  </div>
+                  <div className="text-lg font-semibold">
+                    Angkatan • Program • Jalur • Prodi • Status
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    Jalur diambil dari field <b>program</b>:
+                    (mandiri)/(reguler), jika tidak ada maka{" "}
+                    <b>default Reguler</b>.
+                  </div>
+                </div>
+
+                <div className="text-xs text-white/60">
+                  Baris:{" "}
+                  <span className="text-white/85 font-semibold">
+                    {rekapFiltered.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* Filters */}
+              <div className="mt-4 grid gap-3 md:grid-cols-4">
+                <div className="rounded-2xl bg-black/20 ring-1 ring-white/10 p-3">
+                  <div className="text-xs text-white/60 flex items-center gap-2">
+                    <FiFilter /> Filter
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setFilterYear("ALL");
+                      setFilterYearInput("");
+                      setFilterProgramTingkat("ALL");
+                      setFilterJalur("ALL");
+                      setFilterProdi("ALL");
+                    }}
+                    className="mt-2 inline-flex items-center gap-2 rounded-2xl bg-white/5 px-3 py-2 text-xs ring-1 ring-white/10 hover:bg-white/10"
+                  >
+                    <FiRotateCcw /> Reset
+                  </button>
+                </div>
+
+                {/* Tahun */}
+                <div className="rounded-2xl bg-white/5 p-3 ring-1 ring-white/10">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-white/60 flex items-center gap-2">
+                      <FiCalendar /> Filter Tahun
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilterYear("ALL");
+                        setFilterYearInput("");
+                      }}
+                      className="rounded-xl bg-black/30 px-3 py-1 text-xs ring-1 ring-white/10 hover:bg-white/10"
+                    >
+                      ALL
+                    </button>
+                  </div>
+
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      value={filterYearInput}
+                      onChange={(e) => setFilterYearInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const y = Number(filterYearInput);
+                          if (Number.isFinite(y) && y >= 1900 && y <= 2100)
+                            setFilterYear(y);
+                        }
+                      }}
+                      type="number"
+                      min={1900}
+                      max={2100}
+                      placeholder="contoh: 2019"
+                      className="w-full rounded-2xl bg-black/25 px-3 py-2 text-sm text-white placeholder:text-white/40 ring-1 ring-white/10 outline-none focus:ring-white/20"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const y = Number(filterYearInput);
+                        if (Number.isFinite(y) && y >= 1900 && y <= 2100)
+                          setFilterYear(y);
+                      }}
+                      className="rounded-2xl bg-white/5 px-3 py-2 text-sm ring-1 ring-white/10 hover:bg-white/10"
+                      title="Terapkan tahun"
+                    >
+                      Terapkan
+                    </button>
+                  </div>
+
+                  <div className="mt-2 text-xs text-white/55">
+                    Tahun aktif:{" "}
+                    <span className="text-white/80 font-semibold">
+                      {filterYear === "ALL" ? "Semua" : filterYear}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Program */}
+                <select
+                  value={filterProgramTingkat}
+                  onChange={(e) =>
+                    setFilterProgramTingkat(e.target.value as any)
+                  }
+                  className="rounded-2xl bg-white/5 px-3 py-2 text-sm ring-1 ring-white/10 outline-none focus:ring-white/20"
+                >
+                  <option value="ALL" className="bg-[#070A14]">
+                    Semua Program
+                  </option>
+                  {filterOptions.programs.map((p) => (
+                    <option key={p} value={p} className="bg-[#070A14]">
+                      {p}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Jalur */}
+                <select
+                  value={filterJalur}
+                  onChange={(e) => setFilterJalur(e.target.value as any)}
+                  className="rounded-2xl bg-white/5 px-3 py-2 text-sm ring-1 ring-white/10 outline-none focus:ring-white/20"
+                >
+                  <option value="ALL" className="bg-[#070A14]">
+                    Semua Jalur
+                  </option>
+                  {filterOptions.jalurs.map((j) => (
+                    <option key={j} value={j} className="bg-[#070A14]">
+                      {j}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Prodi */}
+                <select
+                  value={filterProdi}
+                  onChange={(e) => setFilterProdi(e.target.value as any)}
+                  className="rounded-2xl bg-white/5 px-3 py-2 text-sm ring-1 ring-white/10 outline-none focus:ring-white/20 md:col-start-4"
+                >
+                  <option value="ALL" className="bg-[#070A14]">
+                    Semua Prodi
+                  </option>
+                  {filterOptions.prodis.map((p) => (
+                    <option key={p} value={p} className="bg-[#070A14]">
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Table */}
+              <div className="mt-4 overflow-x-auto rounded-2xl ring-1 ring-white/10">
+                <table className="min-w-[1200px] w-full text-sm">
+                  <thead className="bg-black/30 text-white/70">
+                    <tr>
+                      <th className="px-3 py-3 text-left">Angkatan</th>
+                      <th className="px-3 py-3 text-left">Program</th>
+                      <th className="px-3 py-3 text-left">Jalur</th>
+                      <th className="px-3 py-3 text-left">Prodi</th>
+
+                      <th className="px-3 py-3 text-right">Jumlah Awal</th>
+                      <th className="px-3 py-3 text-right">Aktif</th>
+                      <th className="px-3 py-3 text-right">Lulus</th>
+                      <th className="px-3 py-3 text-right">Cuti</th>
+                      <th className="px-3 py-3 text-right">Skorsing</th>
+                      <th className="px-3 py-3 text-right">DO</th>
+                      <th className="px-3 py-3 text-right">Mengundurkan</th>
+                      <th className="px-3 py-3 text-right">Belum Lulus</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {rekapFiltered.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={12}
+                          className="px-3 py-8 text-center text-white/60"
+                        >
+                          Tidak ada data sesuai filter.
+                        </td>
+                      </tr>
+                    ) : (
+                      rekapFiltered.map((r, idx) => (
+                        <tr
+                          key={`${r.year}-${r.programTingkat}-${r.jalur}-${r.prodi}-${idx}`}
+                          className="border-t border-white/10 hover:bg-white/5"
+                        >
+                          <td className="px-3 py-3 font-semibold">{r.year}</td>
+                          <td className="px-3 py-3 text-white/85">
+                            {r.programTingkat}
+                          </td>
+                          <td className="px-3 py-3 text-white/85">{r.jalur}</td>
+                          <td className="px-3 py-3 text-white/85">{r.prodi}</td>
+
+                          <td className="px-3 py-3 text-right font-semibold">
+                            {r.total}
+                          </td>
+                          <td className="px-3 py-3 text-right">{r.aktif}</td>
+                          <td className="px-3 py-3 text-right">{r.lulus}</td>
+                          <td className="px-3 py-3 text-right">{r.cuti}</td>
+                          <td className="px-3 py-3 text-right">{r.skorsing}</td>
+                          <td className="px-3 py-3 text-right">{r.dropout}</td>
+                          <td className="px-3 py-3 text-right">
+                            {r.mengundurkan}
+                          </td>
+                          <td className="px-3 py-3 text-right font-semibold text-white/90">
+                            {r.belumLulus}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+
+                  {/* Totals per angkatan + grand total */}
+                  {totalPerAngkatanFiltered.length > 0 && (
+                    <tfoot className="bg-black/20">
+                      {totalPerAngkatanFiltered.map((t) => (
+                        <tr
+                          key={`total-${t.year}`}
+                          className="border-t border-white/10"
+                        >
+                          <td className="px-3 py-3 font-semibold" colSpan={4}>
+                            Total Angkatan {t.year}
+                          </td>
+                          <td className="px-3 py-3 text-right font-semibold">
+                            {t.total}
+                          </td>
+                          <td className="px-3 py-3 text-right">{t.aktif}</td>
+                          <td className="px-3 py-3 text-right">{t.lulus}</td>
+                          <td className="px-3 py-3 text-right">{t.cuti}</td>
+                          <td className="px-3 py-3 text-right">{t.skorsing}</td>
+                          <td className="px-3 py-3 text-right">{t.dropout}</td>
+                          <td className="px-3 py-3 text-right">
+                            {t.mengundurkan}
+                          </td>
+                          <td className="px-3 py-3 text-right font-semibold text-white/90">
+                            {t.belumLulus}
+                          </td>
+                        </tr>
+                      ))}
+
+                      <tr className="border-t border-white/10">
+                        <td className="px-3 py-4 font-bold" colSpan={4}>
+                          Grand Total (Semua Angkatan)
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.total}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.aktif}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.lulus}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.cuti}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.skorsing}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.dropout}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold">
+                          {grandTotalFiltered.mengundurkan}
+                        </td>
+                        <td className="px-3 py-4 text-right font-bold text-white">
+                          {grandTotalFiltered.belumLulus}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+
+              <div className="mt-3 text-[11px] text-white/45">
+                Catatan: <b>Belum Lulus</b> = semua status selain <b>Lulus</b>{" "}
+                (otomatis: total - lulus). Jalur default <b>Reguler</b> jika
+                program tidak mengandung (reguler)/(mandiri).
+              </div>
+            </motion.div>
           </>
         )}
 
         <div className="mt-6 text-xs text-white/45">
-          © {new Date().getFullYear()} Admin Dashboard — Rekap semua tahun
+          © {new Date().getFullYear()} REKAP TARUNA POLTEKPEL
         </div>
       </div>
     </div>

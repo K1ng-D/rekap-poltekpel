@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FiHome,
@@ -10,6 +10,7 @@ import {
   FiChevronDown,
   FiCalendar,
   FiBookOpen,
+  FiCheck,
 } from "react-icons/fi";
 
 type SidebarAdminProps = {
@@ -26,8 +27,8 @@ export default function SidebarAdmin({
   onSelect,
 }: SidebarAdminProps) {
   const pathname = usePathname();
+  const router = useRouter();
 
-  const years = useMemo(() => [2019, 2020, 2021, 2022, 2023, 2024, 2025], []);
   const kategoris = useMemo(
     () => [
       { slug: "diploma-iii", label: "Diploma III" },
@@ -39,10 +40,29 @@ export default function SidebarAdmin({
 
   const [open, setOpen] = useState(true);
 
+  // input bebas
+  const [yearInput, setYearInput] = useState<string>(String(selectedYear));
+
+  // sync kalau selectedYear berubah dari luar
+  useEffect(() => {
+    setYearInput(String(selectedYear));
+  }, [selectedYear]);
+
   const isHome = pathname === "/admin/dashboard";
   const isYearPage =
     pathname === `/admin/dashboard/${selectedYear}` ||
     pathname.startsWith(`/admin/dashboard/${selectedYear}/`);
+
+  function applyYear() {
+    const y = Number(yearInput);
+
+    // batas wajar biar gak random (kamu bisa ubah)
+    if (!Number.isFinite(y) || y < 1900 || y > 2100) return;
+
+    onSelect(y, null);
+    // optional: langsung arahkan ke halaman rekap tahun
+    router.push(`/admin/dashboard/${y}`);
+  }
 
   return (
     <aside className="w-full md:w-72 rounded-3xl bg-white/5 p-4 ring-1 ring-white/10 backdrop-blur">
@@ -78,9 +98,7 @@ export default function SidebarAdmin({
             </span>
             <span className="flex-1 text-left">
               <div className="font-semibold">Data Pertahun</div>
-              <div className="text-xs text-white/50">
-                Klik untuk pilih tahun
-              </div>
+              <div className="text-xs text-white/50">Ketik tahun bebas</div>
             </span>
 
             <motion.span
@@ -107,17 +125,30 @@ export default function SidebarAdmin({
                     <span>Pilih Tahun</span>
                   </div>
 
-                  <select
-                    value={selectedYear}
-                    onChange={(e) => onSelect(Number(e.target.value), null)}
-                    className="mt-2 w-full rounded-2xl bg-white/5 px-3 py-2 text-sm text-white ring-1 ring-white/10 outline-none focus:ring-white/20"
-                  >
-                    {years.map((y) => (
-                      <option key={y} value={y} className="bg-[#070A14]">
-                        {y}
-                      </option>
-                    ))}
-                  </select>
+                  {/* ✅ input bebas */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      value={yearInput}
+                      onChange={(e) => setYearInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") applyYear();
+                      }}
+                      type="number"
+                      min={1900}
+                      max={2100}
+                      placeholder="contoh: 2019"
+                      className="w-full rounded-2xl bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/40 ring-1 ring-white/10 outline-none focus:ring-white/20"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={applyYear}
+                      className="rounded-2xl bg-white/5 p-2 ring-1 ring-white/10 hover:bg-white/10"
+                      title="Pakai Tahun"
+                    >
+                      <FiCheck />
+                    </button>
+                  </div>
 
                   <div className="mt-3 space-y-2">
                     <Link
@@ -163,6 +194,14 @@ export default function SidebarAdmin({
                     <span className="text-white font-semibold">
                       {selectedYear}
                     </span>
+                    {selectedCategory ? (
+                      <>
+                        <span className="mx-2 text-white/30">•</span>
+                        <span className="text-white/80">
+                          {selectedCategory}
+                        </span>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               </motion.div>

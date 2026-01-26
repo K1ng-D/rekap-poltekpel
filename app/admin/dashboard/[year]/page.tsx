@@ -18,7 +18,7 @@ import {
   FiLogOut,
 } from "react-icons/fi";
 
-import { db } from "@/lib/firebase";
+import { db } from "@/lib/firebase"; // sesuaikan kalau kamu pakai "@/lib/firebase/client"
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 
 const easeOut: [number, number, number, number] = [0.16, 1, 0.3, 1];
@@ -32,12 +32,21 @@ const fadeUp: Variants = {
   }),
 };
 
-type StatusKey = "lulus" | "skorsing" | "cuti" | "dropout" | "mengundurkan";
+/** ✅ UPDATE: tambah status AKTIF */
+type StatusKey =
+  | "aktif"
+  | "lulus"
+  | "skorsing"
+  | "cuti"
+  | "dropout"
+  | "mengundurkan";
 
+/** ✅ UPDATE: Row ambil juga field program (buat jalur/prodi jika dibutuhkan nanti) */
 type Row = {
   id: string;
   year: number;
   kategori: string;
+  program: string;
   keterangan: string;
 };
 
@@ -47,20 +56,24 @@ const KATEGORI = [
   { slug: "dp-iv", label: "DP IV" },
 ] as const;
 
+/** ✅ UPDATE: normalizeStatus mendeteksi 'aktif' */
 function normalizeStatus(keterangan: string): StatusKey {
   const s = (keterangan || "").toLowerCase().trim().replace(/\s+/g, " ");
 
   if (!s) return "mengundurkan";
 
+  if (s.includes("aktif")) return "aktif";
   if (s.includes("lulus")) return "lulus";
   if (s.includes("skors")) return "skorsing";
   if (s.includes("cuti")) return "cuti";
+
   if (
     s.includes("dropout") ||
     s.includes("lewat masa studi") ||
     /\bdo\b/.test(s)
   )
     return "dropout";
+
   if (
     s.includes("mengundurkan diri") ||
     s.includes("pengunduran diri") ||
@@ -71,8 +84,10 @@ function normalizeStatus(keterangan: string): StatusKey {
   return "mengundurkan";
 }
 
+/** ✅ UPDATE: counts include aktif */
 function emptyCounts() {
   return {
+    aktif: 0,
     lulus: 0,
     skorsing: 0,
     cuti: 0,
@@ -107,7 +122,7 @@ export default function DashboardYearSummaryPage() {
   const params = useParams<{ year: string }>();
   const year = Number(params.year);
 
-  const allowedYear = Number.isFinite(year) && year >= 2000 && year <= 2100;
+  const allowedYear = Number.isFinite(year) && year >= 1900 && year <= 2100;
   if (!allowedYear) return notFound();
 
   const [rows, setRows] = useState<Row[]>([]);
@@ -124,14 +139,15 @@ export default function DashboardYearSummaryPage() {
     const unsub = onSnapshot(
       qRef,
       (snap) => {
-        const data = snap.docs.map((d) => {
+        const data: Row[] = snap.docs.map((d) => {
           const x = d.data() as any;
           return {
             id: d.id,
-            year: x.year,
-            kategori: x.kategori ?? "",
-            keterangan: x.keterangan ?? "",
-          } as Row;
+            year: Number(x.year ?? year),
+            kategori: String(x.kategori ?? ""),
+            program: String(x.program ?? ""),
+            keterangan: String(x.keterangan ?? ""),
+          };
         });
 
         setRows(data);
@@ -150,10 +166,8 @@ export default function DashboardYearSummaryPage() {
   const filtered = useMemo(() => {
     const allowed = new Set(KATEGORI.map((k) => k.slug));
     return rows.filter((r) => {
-      const slug = String(
-        r.kategori || "",
-      ).toLowerCase() as (typeof KATEGORI)[number]["slug"];
-      return allowed.has(slug);
+      const slug = String(r.kategori || "").toLowerCase();
+      return allowed.has(slug as any);
     });
   }, [rows]);
 
@@ -228,7 +242,6 @@ export default function DashboardYearSummaryPage() {
               <FiChevronLeft /> Dashboard Utama
             </Link>
 
-            {/* quick links kategori */}
             {KATEGORI.map((k) => (
               <Link
                 key={k.slug}
@@ -267,7 +280,13 @@ export default function DashboardYearSummaryPage() {
                 Kondisi Aktual Tahun {year}
               </div>
 
-              <div className="mt-4 grid gap-3 md:grid-cols-5">
+              {/* ✅ UPDATE: jadi 6 kolom */}
+              <div className="mt-4 grid gap-3 md:grid-cols-6">
+                <StatusBadge
+                  label="Aktif"
+                  value={overallCounts.aktif}
+                  icon={FiUsers}
+                />
                 <StatusBadge
                   label="Lulus"
                   value={overallCounts.lulus}
@@ -289,7 +308,7 @@ export default function DashboardYearSummaryPage() {
                   icon={FiXCircle}
                 />
                 <StatusBadge
-                  label="Mengundurkan Diri"
+                  label="Mengundurkan"
                   value={overallCounts.mengundurkan}
                   icon={FiLogOut}
                 />
@@ -326,6 +345,10 @@ export default function DashboardYearSummaryPage() {
 
                     <div className="mt-4 space-y-2 text-sm">
                       <div className="flex justify-between rounded-2xl bg-black/25 px-3 py-2 ring-1 ring-white/10">
+                        <span className="text-white/70">Aktif</span>
+                        <span className="font-semibold">{c.aktif}</span>
+                      </div>
+                      <div className="flex justify-between rounded-2xl bg-black/25 px-3 py-2 ring-1 ring-white/10">
                         <span className="text-white/70">Lulus</span>
                         <span className="font-semibold">{c.lulus}</span>
                       </div>
@@ -342,7 +365,7 @@ export default function DashboardYearSummaryPage() {
                         <span className="font-semibold">{c.dropout}</span>
                       </div>
                       <div className="flex justify-between rounded-2xl bg-black/25 px-3 py-2 ring-1 ring-white/10">
-                        <span className="text-white/70">Mengundurkan Diri</span>
+                        <span className="text-white/70">Mengundurkan</span>
                         <span className="font-semibold">{c.mengundurkan}</span>
                       </div>
                     </div>
@@ -358,15 +381,14 @@ export default function DashboardYearSummaryPage() {
               })}
             </div>
 
-            {/* Empty info if no data */}
             {overallTotal === 0 && (
               <div className="mt-6 rounded-3xl bg-white/5 p-6 ring-1 ring-white/10">
                 <div className="text-lg font-semibold">
                   Belum ada data untuk tahun {year}
                 </div>
                 <div className="mt-1 text-sm text-white/70">
-                  Silakan import CSV pada masing-masing kategori:
-                  <span className="ml-2 text-white/90 font-semibold">
+                  Silakan import CSV pada masing-masing kategori:{" "}
+                  <span className="text-white/90 font-semibold">
                     Diploma III / DP III / DP IV
                   </span>
                 </div>

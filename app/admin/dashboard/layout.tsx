@@ -51,7 +51,7 @@ export default function DashboardLayout({
   return (
     <div className="min-h-screen bg-[#070A14] text-white">
       <div className="mx-auto px-4 py-6">
-        <div className="grid gap-4 md:grid-cols-[288px_1fr]">
+        <div className="grid gap-4 md:grid-cols-[200px_1fr]">
           <SidebarAdmin
             selectedYear={selectedYear}
             selectedCategory={selectedCategory}
