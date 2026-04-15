@@ -108,12 +108,10 @@ const fadeUp: Variants = {
 function normalizeStatus(keterangan: string): StatusKey {
   const s = (keterangan || "").toLowerCase().trim().replace(/\s+/g, " ");
 
-  // kalau kosong -> mengundurkan (sesuai aturan sebelumnya)
+  // kalau kosong -> mengundurkan
   if (!s) return "mengundurkan";
 
-  // ✅ status baru
   if (s.includes("aktif")) return "aktif";
-
   if (s.includes("lulus")) return "lulus";
   if (s.includes("skors")) return "skorsing";
   if (s.includes("cuti")) return "cuti";
@@ -171,6 +169,7 @@ function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
   const rad = ((angleDeg - 90) * Math.PI) / 180.0;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
+
 function arcPath(
   cx: number,
   cy: number,
@@ -309,7 +308,7 @@ function BarChart({ items }: { items: StatusItem[] }) {
                     <span className="text-xs text-white/55">({pctTotal}%)</span>
                   </div>
                 </div>
-                <div className="mt-2 h-2.5 w-full rounded-full bg-white/5 ring-1 ring-white/10 overflow-hidden">
+                <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-white/5 ring-1 ring-white/10">
                   <motion.div
                     initial={{ width: 0 }}
                     animate={{ width: `${pctWidth}%` }}
@@ -347,6 +346,7 @@ export default function Page() {
   /** UI */
   const [qText, setQText] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusKey | null>(null);
+  const [programFilter, setProgramFilter] = useState<string | null>(null);
 
   const PAGE_SIZE = 20;
   const [page, setPage] = useState(1);
@@ -362,7 +362,7 @@ export default function Page() {
 
   useEffect(() => {
     setPage(1);
-  }, [qText, statusFilter, year, kategoriSlug]);
+  }, [qText, statusFilter, programFilter, year, kategoriSlug]);
 
   /** READ realtime */
   useEffect(() => {
@@ -409,6 +409,17 @@ export default function Page() {
     return () => unsub();
   }, [year, kategoriSlug]);
 
+  /** LIST PROGRAM DINAMIS DARI FIRESTORE */
+  const availablePrograms = useMemo(() => {
+    const mapped = rows
+      .map((r) => String(r.program || "").trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(mapped)).sort((a, b) =>
+      a.localeCompare(b, "id", { sensitivity: "base" }),
+    );
+  }, [rows]);
+
   /** FILTER */
   const filtered = useMemo(() => {
     const s = qText.trim().toLowerCase();
@@ -425,10 +436,21 @@ export default function Page() {
 
       if (!matchSearch) return false;
 
-      if (!statusFilter) return true;
-      return normalizeStatus(r.keterangan) === statusFilter;
+      const matchStatus =
+        !statusFilter || normalizeStatus(r.keterangan) === statusFilter;
+      if (!matchStatus) return false;
+
+      const matchProgram =
+        !programFilter ||
+        String(r.program || "")
+          .trim()
+          .toLowerCase() === programFilter.toLowerCase();
+
+      if (!matchProgram) return false;
+
+      return true;
     });
-  }, [rows, qText, statusFilter]);
+  }, [rows, qText, statusFilter, programFilter]);
 
   /** STATUS COUNTS */
   const statusItems: StatusItem[] = useMemo(() => {
@@ -550,9 +572,7 @@ export default function Page() {
             ttl: (r["ttl"] ?? "").toString().trim(),
             lp: (r["lp"] ?? "").toString().trim(),
             program: (r["program"] ?? "").toString().trim(),
-            // KET dari CSV -> keterangan
             keterangan: (r["ket"] ?? r["keterangan"] ?? "").toString().trim(),
-            // SK dari CSV -> skName
             skName: (r["sk"] ?? "").toString().trim(),
             skFile: null,
           };
@@ -568,7 +588,6 @@ export default function Page() {
         return;
       }
 
-      // delete old data
       const existingSnap = await getDocs(
         query(
           collection(db, "students"),
@@ -687,7 +706,6 @@ export default function Page() {
     const ref = doc(collection(db, "students"), rowId);
     const finalName = fallbackName?.trim() ? fallbackName : file.name;
 
-    // ✅ simpan hanya field aman (tanpa format/resourceType)
     await updateDoc(ref, {
       skName: finalName,
       skFile: {
@@ -805,7 +823,7 @@ export default function Page() {
             Memuat data dari Firestore...
           </div>
         ) : err ? (
-          <div className="mt-6 rounded-3xl bg-white/5 p-6 ring-1 ring-red-400/30 text-red-200">
+          <div className="mt-6 rounded-3xl bg-white/5 p-6 text-red-200 ring-1 ring-red-400/30">
             Error Firestore: {err}
           </div>
         ) : (
@@ -826,7 +844,7 @@ export default function Page() {
                 initial="hidden"
                 animate="show"
                 custom={1}
-                className="lg:col-span-1 rounded-3xl bg-white/5 p-5 ring-1 ring-white/10 backdrop-blur"
+                className="rounded-3xl bg-white/5 p-5 ring-1 ring-white/10 backdrop-blur lg:col-span-1"
               >
                 <div className="flex items-center justify-between">
                   <div>
@@ -838,7 +856,7 @@ export default function Page() {
                   </div>
                   <div className="text-xs text-white/60">
                     Total:{" "}
-                    <span className="text-white/90 font-semibold">{total}</span>
+                    <span className="font-semibold text-white/90">{total}</span>
                   </div>
                 </div>
 
@@ -860,7 +878,7 @@ export default function Page() {
                         }}
                       />
                       <span className="text-white/80">{s.label}</span>
-                      <span className="ml-auto text-white font-semibold">
+                      <span className="ml-auto font-semibold text-white">
                         {s.value}
                       </span>
                     </div>
@@ -873,7 +891,7 @@ export default function Page() {
                 initial="hidden"
                 animate="show"
                 custom={2}
-                className="lg:col-span-2 rounded-3xl bg-white/5 p-5 ring-1 ring-white/10 backdrop-blur"
+                className="rounded-3xl bg-white/5 p-5 ring-1 ring-white/10 backdrop-blur lg:col-span-2"
               >
                 <div className="flex items-center justify-between">
                   <div>
@@ -909,6 +927,19 @@ export default function Page() {
                     Menampilkan: {pagedRows.length} data (Hal {currentPage}/
                     {totalPages}) dari {totalRows}
                   </div>
+
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-white/60">
+                    {statusFilter && (
+                      <span className="rounded-full bg-white/5 px-3 py-1 ring-1 ring-white/10">
+                        Status: {statusFilter}
+                      </span>
+                    )}
+                    {programFilter && (
+                      <span className="rounded-full bg-white/5 px-3 py-1 ring-1 ring-white/10">
+                        Program: {programFilter}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="relative w-full md:w-96">
@@ -916,55 +947,100 @@ export default function Page() {
                   <input
                     value={qText}
                     onChange={(e) => setQText(e.target.value)}
-                    placeholder="Search (Nama/NRT/Status/SK)"
+                    placeholder="Search (Nama/NRT/Program/Status/SK)"
                     className="w-full rounded-2xl bg-white/5 px-10 py-2.5 text-sm text-white placeholder:text-white/40 ring-1 ring-white/10 outline-none focus:ring-white/20"
                   />
                 </div>
               </div>
 
-              {/* Filter chips */}
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => setStatusFilter(null)}
-                  className={[
-                    "rounded-2xl px-4 py-2 text-sm ring-1 transition",
-                    statusFilter === null
-                      ? "bg-white/10 ring-white/20"
-                      : "bg-black/20 ring-white/10 hover:bg-white/10",
-                  ].join(" ")}
-                >
-                  Semua
-                </button>
+              {/* Filter status */}
+              <div className="mt-4">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-white/45">
+                  Filter Status
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setStatusFilter(null)}
+                    className={[
+                      "rounded-2xl px-4 py-2 text-sm ring-1 transition",
+                      statusFilter === null
+                        ? "bg-white/10 ring-white/20"
+                        : "bg-black/20 ring-white/10 hover:bg-white/10",
+                    ].join(" ")}
+                  >
+                    Semua
+                  </button>
 
-                {statusItems.map((it) => {
-                  const active = statusFilter === it.key;
-                  return (
-                    <button
-                      key={it.key}
-                      onClick={() => setStatusFilter(active ? null : it.key)}
-                      className={[
-                        "inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm ring-1 transition",
-                        active
-                          ? "ring-white/25 bg-white/10"
-                          : "bg-black/20 ring-white/10 hover:bg-white/10",
-                      ].join(" ")}
-                      style={
-                        active
-                          ? { boxShadow: `0 0 18px ${it.color}25` }
-                          : undefined
-                      }
-                    >
-                      <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{
-                          backgroundColor: it.color,
-                          boxShadow: `0 0 10px ${it.color}`,
-                        }}
-                      />
-                      {it.label}
-                    </button>
-                  );
-                })}
+                  {statusItems.map((it) => {
+                    const active = statusFilter === it.key;
+                    return (
+                      <button
+                        key={it.key}
+                        onClick={() => setStatusFilter(active ? null : it.key)}
+                        className={[
+                          "inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm ring-1 transition",
+                          active
+                            ? "bg-white/10 ring-white/25"
+                            : "bg-black/20 ring-white/10 hover:bg-white/10",
+                        ].join(" ")}
+                        style={
+                          active
+                            ? { boxShadow: `0 0 18px ${it.color}25` }
+                            : undefined
+                        }
+                      >
+                        <span
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{
+                            backgroundColor: it.color,
+                            boxShadow: `0 0 10px ${it.color}`,
+                          }}
+                        />
+                        {it.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Filter program */}
+              <div className="mt-4">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-white/45">
+                  Filter Program
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setProgramFilter(null)}
+                    className={[
+                      "rounded-2xl px-4 py-2 text-sm ring-1 transition",
+                      programFilter === null
+                        ? "bg-cyan-400/10 text-cyan-200 ring-cyan-300/25"
+                        : "bg-black/20 ring-white/10 hover:bg-white/10",
+                    ].join(" ")}
+                  >
+                    Semua Program
+                  </button>
+
+                  {availablePrograms.map((program) => {
+                    const active = programFilter === program;
+                    return (
+                      <button
+                        key={program}
+                        onClick={() =>
+                          setProgramFilter(active ? null : program)
+                        }
+                        className={[
+                          "inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm ring-1 transition",
+                          active
+                            ? "bg-cyan-400/10 text-cyan-200 ring-cyan-300/25"
+                            : "bg-black/20 ring-white/10 hover:bg-white/10",
+                        ].join(" ")}
+                      >
+                        {program}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="mt-4 overflow-x-auto rounded-2xl ring-1 ring-white/10">
